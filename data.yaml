@@ -1,0 +1,6 @@
+path: /home/vidhi/VisDrone2019-MOT-val/The-Aerial-Guardian/dataset
+train: images/train
+val: images/val
+
+nc: 1
+names: ['human']
