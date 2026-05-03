@@ -375,4 +375,5 @@ python3 track.py --model best.onnx --source sequences/uav0000297_02761_v --outpu
 
 ## Author
 
-Vidhi Srivastava
+**Vidhi Srivastava** — [LinkedIn](https://www.linkedin.com/in/vidhisrivastava01/)
+
