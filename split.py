@@ -60,6 +60,7 @@ def process_sequence(seq_name, split):
 
     print(f"  [{split}] {seq_name}: {copied} images, {label_found} labels found, {label_missing} missing")
 
+# ===== PROCESS =====
 for seq in train_seqs:
     process_sequence(seq, "train")
 
