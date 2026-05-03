@@ -4,3 +4,7 @@
 /val_output
 /train_output
 /labels
+/data
+/data2
+/runs
+/yolo_runs

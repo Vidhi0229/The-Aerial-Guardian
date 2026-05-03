@@ -1,6 +1,5 @@
-path: /home/vidhi/VisDrone2019-MOT-val/The-Aerial-Guardian/dataset
+path: /home/vidhi/VisDrone2019-MOT-val/The-Aerial-Guardian/data2
 train: images/train
 val: images/val
-
 nc: 1
-names: ['human']
+names: ['person']
