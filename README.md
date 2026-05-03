@@ -19,7 +19,7 @@ Fine-tuned YOLOv8s + custom ByteTrack for the VisDrone2019 MOT dataset.
 | Tile Size | 640×640 with 20% overlap |
 
 
-[tracked output video](output/tracked.mp4)
+
 ---
 
 ## Setup
@@ -369,4 +369,10 @@ python3 eval.py
 
 # Step 5: Run tracking
 python3 track.py --model best.onnx --source sequences/uav0000297_02761_v --output output/tracked.mp4
-```
+
+
+---
+
+## Author
+
+Vidhi Srivastava
