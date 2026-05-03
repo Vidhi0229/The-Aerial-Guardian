@@ -370,10 +370,13 @@ python3 eval.py
 # Step 5: Run tracking
 python3 track.py --model best.onnx --source sequences/uav0000297_02761_v --output output/tracked.mp4
 
-
+```
 ---
 
-## Author
+## Authors
+**Vidhi Srivastava**
 
-**Vidhi Srivastava** — [LinkedIn](https://www.linkedin.com/in/vidhisrivastava01/)
+[Linkedin](https://www.linkedin.com/in/vidhisrivastava01/)
+
+[Github](https://github.com/Vidhi0229)
 
