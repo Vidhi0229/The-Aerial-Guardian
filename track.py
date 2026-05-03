@@ -6,6 +6,7 @@ import argparse
 import os
 import time
 
+
 class ONNXDetector:
     def __init__(self, model_path, imgsz=640, conf=0.15, iou=0.45):
         self.imgsz = imgsz
@@ -33,10 +34,9 @@ class ONNXDetector:
         scale = min(self.imgsz / ow, self.imgsz / oh)
         nw, nh = int(ow * scale), int(oh * scale)
 
-        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(frame, (nw, nh))
 
-        canvas = np.zeros((self.imgsz, self.imgsz, 3), dtype=np.uint8)
-        canvas[:] = 114
+        canvas = np.full((self.imgsz, self.imgsz, 3), 114, dtype=np.uint8)
 
         top  = (self.imgsz - nh) // 2
         left = (self.imgsz - nw) // 2
@@ -53,6 +53,7 @@ class ONNXDetector:
 
         mask = pred[:, 4] >= self.conf
         pred = pred[mask]
+
         if len(pred) == 0:
             return [], []
 
@@ -98,14 +99,13 @@ class ONNXDetector:
 
 
 class ByteTracker:
-    def __init__(self, max_age=25, min_hits=2,
-                 iou_thresh=0.20, high_thresh=0.30):
-        self.max_age    = max_age
-        self.min_hits   = min_hits
+    def __init__(self, max_age=25, min_hits=2, iou_thresh=0.20, high_thresh=0.30):
+        self.max_age = max_age
+        self.min_hits = min_hits
         self.iou_thresh = iou_thresh
-        self.high_thresh= high_thresh
-        self.tracks     = []
-        self.next_id    = 1
+        self.high_thresh = high_thresh
+        self.tracks = []
+        self.next_id = 1
 
     def iou(self, a, b):
         ax1,ay1,ax2,ay2 = a
@@ -134,8 +134,6 @@ class ByteTracker:
 
     def update(self, boxes, scores):
         high = [(b,s) for b,s in zip(boxes,scores) if s>=self.high_thresh]
-        low  = [(b,s) for b,s in zip(boxes,scores) if s< self.high_thresh]
-
         active = list(range(len(self.tracks)))
 
         m1 = self._match(high, active)
@@ -150,17 +148,8 @@ class ByteTracker:
         unmatched_t = [i for i in active if i not in m1.values()]
         unmatched_d = [i for i in range(len(high)) if i not in m1]
 
-        m2 = self._match(low, unmatched_t)
-        for di, ti in m2.items():
-            self.tracks[ti].update({
-                "box": low[di][0],
-                "score": low[di][1],
-                "age": 0
-            })
-
         for ti in unmatched_t:
-            if ti not in m2.values():
-                self.tracks[ti]["age"] += 1
+            self.tracks[ti]["age"] += 1
 
         self.tracks = [t for t in self.tracks if t["age"] <= self.max_age]
 
@@ -182,32 +171,52 @@ def get_color(tid):
     return tuple(int(x) for x in np.random.randint(80,255,3))
 
 
-def draw_tail(frame, history, tid, color, max_len):
-    pts = history[tid]
-    for i in range(1, len(pts)):
-        cv2.line(frame, pts[i-1], pts[i], color, 2)
-
 def run_tracking(model, source, output, conf, iou, imgsz, tail):
+
+    if not os.path.exists(source):
+        raise ValueError(f"Source folder not found: {source}")
+
+    files = sorted([f for f in os.listdir(source)
+                    if f.lower().endswith((".jpg",".png",".jpeg"))])
+
+    if len(files) == 0:
+        raise ValueError("No images found in source folder")
+
+    paths = [os.path.join(source,f) for f in files]
+
+    sample = cv2.imread(paths[0])
+    if sample is None:
+        raise ValueError("Failed to read first image")
+
+    h, w = sample.shape[:2]
+
+    os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
+
+    print(f"Saving video to: {output}")
+    print(f"Total frames: {len(paths)}")
+
+    writer = cv2.VideoWriter(
+        output,
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        25,
+        (w, h)
+    )
+
+    if not writer.isOpened():
+        raise RuntimeError("VideoWriter failed to open")
 
     detector = ONNXDetector(model, imgsz, conf, iou)
     tracker  = ByteTracker()
 
-    files = sorted([f for f in os.listdir(source) if f.endswith((".jpg",".png"))],
-                   key=lambda x: int(os.path.splitext(x)[0]))
-    paths = [os.path.join(source,f) for f in files]
-
-    sample = cv2.imread(paths[0])
-    h,w = sample.shape[:2]
-
-    writer = cv2.VideoWriter(output,
-                             cv2.VideoWriter_fourcc(*"mp4v"),
-                             25,(w,h))
-
     history = defaultdict(list)
     inf_times = []
 
-    for i, path in enumerate(paths):
+    for path in paths:
         frame = cv2.imread(path)
+
+        if frame is None:
+            print(f"Skipping bad frame: {path}")
+            continue
 
         boxes, scores, inf = detector.detect(frame)
         inf_times.append(inf)
@@ -221,17 +230,16 @@ def run_tracking(model, source, output, conf, iou, imgsz, tail):
 
             cx,cy = (x1+x2)//2,(y1+y2)//2
             history[tid].append((cx,cy))
+
             if len(history[tid]) > tail:
                 history[tid].pop(0)
 
-            draw_tail(frame, history, tid, color, tail)
+            for i in range(1, len(history[tid])):
+                cv2.line(frame, history[tid][i-1], history[tid][i], color, 2)
+
             cv2.rectangle(frame,(x1,y1),(x2,y2),color,2)
 
-        if len(inf_times) > 30:
-            avg = sum(inf_times[-30:]) / 30
-        else:
-            avg = sum(inf_times) / len(inf_times)
-
+        avg = sum(inf_times[-30:]) / min(len(inf_times), 30)
         fps = 1000 / avg
 
         cv2.putText(frame, f"FPS:{fps:.1f}", (10,30),
@@ -241,6 +249,7 @@ def run_tracking(model, source, output, conf, iou, imgsz, tail):
 
     writer.release()
 
+    print(f"\nVideo saved {output}")
     print(f"Avg FPS: {1000/(sum(inf_times)/len(inf_times)):.2f}")
 
 

@@ -1,4 +1,4 @@
-path: /home/vidhi/VisDrone2019-MOT-val/The-Aerial-Guardian/data2
+path: /home/vidhi/VisDrone2019-MOT-val/The-Aerial-Guardian/data
 train: images/train
 val: images/val
 nc: 1

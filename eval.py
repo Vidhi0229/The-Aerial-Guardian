@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 import time
 
-model = YOLO("best.onnx", task="detect")
+model = YOLO("models/best.onnx", task="detect")
 
 metrics = model.val(
     data="data.yaml",
