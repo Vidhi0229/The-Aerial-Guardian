@@ -1,7 +1,7 @@
-/annotations
-/sequences
-/labels
-/data
-/tiled
-/yolo_runs
-/test-images
+annotations
+sequences
+labels
+data
+tiled
+yolo_runs
+test-images

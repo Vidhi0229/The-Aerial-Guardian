@@ -36,7 +36,6 @@ def visualize_random_samples():
         
                     cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-        # show
         cv2.imshow("Visualization", img)
         key = cv2.waitKey(0)
 
