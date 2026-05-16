@@ -3,6 +3,8 @@
 
 ![Demo GIF](output.gif)
 
+
+### Fine-tuned YOLOv8s + custom ByteTrack for the VisDrone2019 MOT dataset. 
 ## Results
 
 | Metric | Value |
