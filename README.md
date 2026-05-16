@@ -1,11 +1,10 @@
 # The Aerial Guardian
 **Human Detection & Tracking Pipeline for Aerial Drone Footage**
 
-Fine-tuned YOLOv8s + custom ByteTrack for the VisDrone2019 MOT dataset. 
----
-
 ![Demo GIF](output.gif)
 
+
+### Fine-tuned YOLOv8s + custom ByteTrack for the VisDrone2019 MOT dataset. 
 ## Results
 
 | Metric | Value |
