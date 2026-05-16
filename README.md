@@ -116,6 +116,7 @@ python3 track.py \
 ```
 
 Output video shows: bounding boxes, unique ID labels, and trajectory tails per tracked person.
+![Demo GIF](output.gif)
 
 
 ---
