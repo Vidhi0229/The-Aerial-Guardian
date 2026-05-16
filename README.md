@@ -4,6 +4,8 @@
 Fine-tuned YOLOv8s + custom ByteTrack for the VisDrone2019 MOT dataset. 
 ---
 
+![Demo GIF](output.gif)
+
 ## Results
 
 | Metric | Value |
@@ -116,7 +118,6 @@ python3 track.py \
 ```
 
 Output video shows: bounding boxes, unique ID labels, and trajectory tails per tracked person.
-![Demo GIF](output.gif)
 
 
 ---
