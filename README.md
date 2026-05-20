@@ -8,13 +8,13 @@
 
 | Metric | Value |
 |--------|-------|
-| mAP50 | 0.951 |
-| mAP50-95 | 0.759 |
-| Precision | 0.962 |
-| Recall | 0.948 |
-| F1 Score | 0.955 |
-| Inference FPS | 6.2 FPS (CPU, ONNX FP32) |
-| Model Size | 43 MB (ONNX) |
+| mAP50 | 0.93 |
+| mAP50-95 | 0.75 |
+| Precision | 0.96 |
+| Recall | 0.93 |
+| F1 Score | 0.94 |
+| Inference FPS | 6.6 FPS (CPU, ONNX FP16) |
+| Model Size | 22 MB (ONNX) |
 | Training Tiles | 11,205 (from 4 sequences) |
 | Tile Size | 640×640 with 20% overlap |
 

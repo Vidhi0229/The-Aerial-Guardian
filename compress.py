@@ -1,12 +1,12 @@
 
 from ultralytics import YOLO
 
-model = YOLO("best.pt")
+model = YOLO("models/best.pt")
 
 model.export(
     format="onnx",
     imgsz=640,        
-    half=False,       
+    half=True,       
     simplify=True,
     dynamic=False,   
     opset=17,
