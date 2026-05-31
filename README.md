@@ -1,3 +1,4 @@
+
 # The Aerial Guardian
 ### Human Detection & Tracking Pipeline for Aerial Drone Footage
 **Fine-tuned YOLOv8s + custom ByteTrack for the VisDrone2019 MOT dataset.** 
@@ -8,11 +9,11 @@
 
 | Metric | Value |
 |--------|-------|
-| mAP50 | 0.93 |
-| mAP50-95 | 0.75 |
+| mAP50 | 0.94 |
+| mAP50-95 | 0.78 |
 | Precision | 0.96 |
 | Recall | 0.93 |
-| F1 Score | 0.94 |
+| F1 Score | 0.95 |
 | Inference FPS | 6.6 FPS (CPU, ONNX FP16) |
 | Model Size | 22 MB (ONNX) |
 | Training Tiles | 11,205 (from 4 sequences) |
@@ -28,7 +29,7 @@ pip install ultralytics onnxruntime opencv-python numpy
 
 ```
 The-Aerial-Guardian/
-├── best.onnx              # Exported inference model (43 MB)
+├── best.onnx              # Exported inference model (22 MB)
 ├── best.pt                # Trained weights (86 MB)
 ├── track.py               # Tracking + visualization pipeline
 ├── eval.py                # Evaluation script
@@ -252,7 +253,7 @@ Result: train 51px vs val 52px median box width — essentially identical
 
 ### 4. Tracking — ByteTrack (Custom NumPy Implementation)
 
-**Algorithm:** Two-stage IoU association, implemented from scratch in pure NumPy/OpenCV. Zero PyTorch or Ultralytics dependency at inference time.
+**Algorithm:** Two-stage association with graveyard-based backtracking, implemented from scratch in NumPy and OpenCV. Zero PyTorch or Ultralytics dependency at inference time.
 
 **Why ByteTrack over DeepSORT:**
 
@@ -263,42 +264,29 @@ Result: train 51px vs val 52px median box width — essentially identical
 | Aerial resolution | Good — IoU sufficient at 40–60px | Re-ID degrades at low resolution |
 | ID switching | Handled by Stage 2 rescue | Handled by appearance features |
 
-At aerial resolution, humans are 40–60px wide — appearance features from a Re-ID network are too low-resolution to add meaningful signal over IoU alone. ByteTrack's key insight: **low-confidence detections still carry useful motion information and should not be discarded**.
+At aerial resolution, humans appear at 40–60px — appearance features from a Re-ID network are too low-resolution to add meaningful signal over geometry alone. ByteTrack's key insight: unmatched detections still carry useful motion information and should not immediately spawn new IDs.
 
-**Two-stage association — how ID switching is reduced:**
+**Two-stage association — how ID switching is reduced:**   
+Detections are first filtered to those meeting high_thresh = 0.25. These feed both stages.
 
-```
-Frame N detections
-        │
-        ├── High confidence (≥0.30) ──► Stage 1: match to ALL active tracks via IoU
-        │                                        matched   → update track, reset age
-        │                                        unmatched → pass to Stage 2
-        │
-        └── Low confidence (<0.30)  ──► Stage 2: match ONLY to unmatched tracks
-                                                 matched   → rescue track (same ID preserved)
-                                                 unmatched → age++
-                                                 age > max_age=25 → delete track
-```
+**Stage 1** matches high-confidence detections against all active tracks using a composite score: 0.4 × IoU + 0.6 × normalised_centre_distance. Matched tracks are updated and their age reset. Unmatched tracks have their age incremented; once age exceeds max_age = 15, they are moved to a graveyard with a timestamp.
+
+**Stage 2** attempts to resurrect recently dead tracks. Unmatched detections from Stage 1 are scored against every graveyard entry using a three-term backtracking score: 0.25 × IoU + 0.50 × velocity_proximity + 0.25 × motion_angle_consistency. A graveyard track is resurrected (its original ID preserved) if its score exceeds backtrack_thresh = 0.30. The graveyard is pruned to entries within the last backtrack_window = 25 frames. Any detection not matched in either stage spawns a new track with a fresh ID.
 
 **Why this matters for drone footage specifically:**
 
 - Drone ego-motion causes whole-frame shifts between consecutive frames
-- During a camera pan, a person may briefly drop below conf=0.30 due to motion blur — but may still be detectable at conf=0.15
-- Stage 2 catches these borderline detections and prevents premature track termination
-- `max_age=25` (≈1 second at 25fps) allows tracks to survive brief occlusions
+- During a camera pan, a person may briefly produce no confident detection due to motion blur
+- The graveyard window (≈1 second at 25 fps) allows tracks to survive brief occlusions and re-enter with their original ID, preventing spurious ID switches
 
-**Letterbox preprocessing (critical for coordinate accuracy):**
-- Images resized with preserved aspect ratio, padded with gray (114) to 640×640
-- Padding offsets (left, top) and scale factor recorded during preprocessing
-- Inverse transform applied in postprocessing to recover original frame coordinates
-- Without this, bounding boxes on non-square footage are systematically offset from the actual person
+**Velocity estimation:**
+Each track maintains an exponentially-smoothed velocity (vx, vy) with α = 0.6. This is used in Stage 2 to predict where a dead track's centre should have moved during the frames it was absent, making the backtracking score robust to camera motion.
+
+**Letterbox preprocessing:**
+Images are resized with preserved aspect ratio and padded with gray (114) to 640×640. The padding offsets (left, top) and scale factor are recorded during preprocessing and used to invert the transform in postprocessing, recovering original frame coordinates. Without this, bounding boxes on non-square footage are systematically offset from the actual person.
 
 **Trajectory smoothing:**
-- Last 3 centroid positions averaged before appending to tail history
-- Reduces jitter caused by drone vibration and single-frame detection noise
-- Tail rendered with linearly increasing thickness (thin -> thick = old -> new)
-
----
+Raw centroids are appended directly to the tail history buffer (no positional averaging is applied). Tails are rendered with linearly increasing thickness and opacity from oldest to newest point, reducing the visual impact of detection jitter from drone vibration.
 
 ### 5. Optimization & Edge Deployment
 
@@ -306,7 +294,7 @@ Frame N detections
 
 | Resolution | Format | FPS | mAP50 | Size |
 |------------|--------|-----|-------|------|
-| 640×640 | ONNX FP32 | 6.2 | 0.951 | 43 MB |
+| 640×640 | ONNX FP32 | 6.2 | 0.951 | 22 MB |
 
 Dropping from 1024px to 640px costs only **1.1% mAP50** while gaining **2.4× speed**.
 
