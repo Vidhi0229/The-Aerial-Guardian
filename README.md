@@ -1,6 +1,6 @@
 # The Aerial Guardian
 ### Human Detection & Tracking Pipeline for Aerial Drone Footage
-**Fine-tuned YOLOv8s + a lightweight IoU-based multi-object tracker for the VisDrone2019 MOT dataset.**
+**Fine-tuned YOLOv8s + a lightweight IoU-based multi-object tracker.**
 
 ## Results
 
@@ -76,8 +76,6 @@ The Aerial Guardian uses a fine-tuned YOLOv8s model for person detection and a l
 5. **Visualization**
    - Bounding boxes, track IDs, and trajectory tails are rendered on each frame.
    - The final tracked video is exported as an MP4 file.
-
-
 ---
 
 ## Dataset
@@ -267,37 +265,37 @@ Total:  11,205 train tiles | 1,976 val tiles
 
 Result: train 51px vs val 52px median box width — essentially identical
 ```
-
 ---
-### 4. Tracking — IoU-Based Multi-Object Tracker
+### 4. Tracking — IoU-Based Multi-Object Tracking
 
-**Algorithm:** A lightweight multi-object tracker implemented in NumPy and OpenCV. The tracker associates detections across consecutive frames using Intersection over Union (IoU) to maintain consistent identities over time.
+The tracking module associates detections across consecutive frames using an Intersection over Union (IoU) based data association strategy implemented in NumPy and OpenCV.
 
-#### Matching Strategy
+#### Tracking Workflow
 
-Detections are first filtered using the `HIGH_THRESH` confidence threshold. Each detection is then matched to the existing track with the highest IoU above the configured `iou_thresh` value. Matched tracks are updated with the new bounding box and their age is reset.
+1. YOLOv8s generates person detections for each frame.
+2. Detections below the configured confidence threshold are discarded.
+3. Remaining detections are matched to existing tracks using greedy IoU matching.
+4. Matched tracks are updated with the new bounding box location.
+5. Unmatched detections initialize new tracks with unique IDs.
+6. Tracks that remain unmatched for more than `max_age` frames are removed.
 
-Tracks that do not receive a matching detection have their age incremented. If a track remains unmatched for more than `max_age` frames, it is removed. Any unmatched detection initializes a new track with a unique ID. Tracks are displayed only after reaching the configured `MIN_HITS` threshold, reducing short-lived false positives.
+#### Preprocessing
 
-#### Letterbox Preprocessing
-
-Input frames are resized using aspect-ratio-preserving letterbox preprocessing before inference. Padding offsets and scaling factors are recorded and later used during postprocessing to map detections back to the original image coordinates accurately.
+Frames are resized using aspect-ratio-preserving letterbox preprocessing before inference. The applied scaling and padding parameters are recorded and used during postprocessing to accurately map detections back to the original image coordinates.
 
 #### Trajectory Visualization
 
-Each track maintains a history of centroid positions across frames. These points are used to render trajectory tails, providing a visual representation of movement over time. Tails are drawn with gradually increasing thickness and opacity from oldest to newest positions, improving motion visualization while preserving the original tracking data.
+Each track maintains a history of centroid positions that are rendered as trajectory tails, enabling visualization of object movement over time. Bounding boxes, track IDs, confidence scores, and motion trails are overlaid on the output video.
 
 #### Output
 
-For each frame, the pipeline generates:
+The final pipeline produces:
 
-- Person bounding boxes
-- Unique track IDs
+- Person detections
+- Persistent track IDs
 - Detection confidence scores
-- Motion trajectory tails
-
-The final output is an annotated video showing tracked individuals throughout the sequence.
-
+- Motion trajectory visualization
+- Annotated output video
 ---
 
 ## Authors
