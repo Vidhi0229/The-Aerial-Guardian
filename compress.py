@@ -1,13 +1,12 @@
-
 from ultralytics import YOLO
 
-model = YOLO("models/best.pt")
+model = YOLO("The-Aerial-Guardian/models/best.pt")
 
 model.export(
     format="onnx",
     imgsz=640,        
-    half=True,       
+    half=False,       
     simplify=True,
-    dynamic=False,   
+    dynamic=True,     # model accept any input size, instead of locking to one fixed shape
     opset=17,
 )

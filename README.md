@@ -1,7 +1,6 @@
-
 # The Aerial Guardian
 ### Human Detection & Tracking Pipeline for Aerial Drone Footage
-**Fine-tuned YOLOv8s + custom ByteTrack for the VisDrone2019 MOT dataset.** 
+**Fine-tuned YOLOv8s + a lightweight IoU-based multi-object tracker for the VisDrone2019 MOT dataset.**
 
 ## Results
 
@@ -14,10 +13,13 @@
 | Precision | 0.96 |
 | Recall | 0.93 |
 | F1 Score | 0.95 |
-| Inference FPS | 6.6 FPS (CPU, ONNX FP16) |
-| Model Size | 22 MB (ONNX) |
+| Inference FPS | ~2.8 FPS (CPU, ONNX FP32, 1920×1080 source, single-pass, no tiling) |
+| Avg inference time | ~357 ms/frame |
+| Model Size | 22 MB (ONNX, FP32) |
 | Training Tiles | 11,205 (from 4 sequences) |
-| Tile Size | 640×640 with 20% overlap |
+| Tile Size (training only) | 640×640 with 20% overlap |
+
+> Detection accuracy (mAP/precision/recall/F1) comes from `eval.py` on the tiled validation set and is unaffected by the tracker simplification below. The FPS figure is a real measurement from running the current `track.py` on a 312-frame sequence, replacing earlier estimates that assumed tiled + multithreaded test-time inference, which has since been removed (see "Pipeline Simplifications").
 
 ## Setup
 
@@ -31,12 +33,12 @@ pip install ultralytics onnxruntime opencv-python numpy
 The-Aerial-Guardian/
 ├── best.onnx              # Exported inference model (22 MB)
 ├── best.pt                # Trained weights (86 MB)
-├── track.py               # Tracking + visualization pipeline
+├── track.py               # Tracking + visualization pipeline (single-pass, no CLI args — see Usage)
 ├── eval.py                # Evaluation script
 ├── split.py               # YOLO labeling + tiling + train/val split
-├── train.py               # Training script
-├── data.yaml              # Dataset config
-├── sequences/             # VisDrone image sequences
+├── train.py                # Training script
+├── data.yaml               # Dataset config
+├── sequences/               # VisDrone image sequences
 │   └── uav0000086_00000_v/
 │       ├── 0000001.jpg
 │       └── ...
@@ -49,6 +51,21 @@ The-Aerial-Guardian/
 │       └── val/
 └── output/
 ```
+
+---
+
+## Pipeline Simplifications
+
+The original implementation used sliced/tiled inference with a thread pool at test time, plus a two-stage ByteTrack-style tracker with velocity estimation and graveyard-based ID resurrection. That version has been replaced with a simpler pipeline:
+
+| Removed | Replaced with |
+|---|---|
+| Sliced ("SAHI"-style) tiled inference at test time, run across a thread pool | A single full-frame inference pass per image |
+| Two-stage association (high/low confidence, graveyard, backtracking) | Single-stage greedy IoU matching |
+| Exponentially-smoothed per-track velocity + motion-angle scoring | No velocity — tracks are matched on IoU only |
+| CLI arguments (`--model`, `--source`, `--output`, `--imgsz`, `--tail`, etc.) | A `CONFIG` block edited directly at the top of `track.py` |
+
+**Trade-offs to know about:** without tiling, people who are very small/far in a 1920×1080 frame are more likely to be missed, since the whole frame is downscaled to the model's input size before inference. Without the graveyard/backtracking stage, a person who is briefly occluded (e.g. during a camera pan) will be assigned a *new* ID rather than resuming their old one. These were deliberate simplifications made for a smaller, easier-to-read codebase — see `HIGH_THRESH` and `IMGSZ` in `track.py`'s `CONFIG` block if you want to tune the accuracy/robustness trade-off back up.
 
 ---
 
@@ -80,18 +97,32 @@ This runs three stages in sequence:
 - **Stage 2**: Tiles each annotated frame into 640×640 patches with 20% overlap
 - **Stage 3**: Stratified 85/15 train/val split, sampling 15% from each sequence independently
 
+Note: this tiling is a **training-data preparation step only**. It is not used at inference time in the current `track.py`.
+
 ### 2. Train
 
 ```bash
 python3 train.py
 ```
+
 ### 3. Export to ONNX
 
 ```bash
 python3 -c "
 from ultralytics import YOLO
 model = YOLO('best.pt')
-model.export(format='onnx', imgsz=640, simplify=True, opset=17)
+model.export(
+    format='onnx',
+    imgsz=640,
+    half=False,     # CPU inference (CPUExecutionProvider) gets no speed
+                     # benefit from fp16, and track.py sends float32
+                     # tensors — half=True causes a dtype mismatch
+    simplify=True,
+    dynamic=True,    # accepts any input size at inference (e.g. if you
+                      # change IMGSZ in track.py later); dynamic=False
+                      # locks the graph to a fixed 640x640 input
+    opset=17,
+)
 "
 ```
 
@@ -103,17 +134,32 @@ python3 eval.py
 
 ### 5. Run Tracking on a Sequence
 
+`track.py` no longer takes command-line flags — open the file and edit the `CONFIG` block near the top:
+
+```python
+MODEL       = "best.onnx"
+SOURCE      = "sequences/uav0000297_02761_v"
+OUTPUT      = "output/tracked.mp4"
+
+CONF        = 0.10
+IOU         = 0.30
+IMGSZ       = 640          # must match what the model was exported/trained for
+                            # unless it was exported with dynamic=True
+
+HIGH_THRESH = 0.10          # min detection score to become/update a track
+MIN_HITS    = 2             # consecutive matches before a track is drawn
+
+FRAME_SKIP  = 1
+TAIL        = 20
+```
+
+Then run:
+
 ```bash
-python3 track.py \
-  --model best.onnx \
-  --source sequences/uav0000297_02761_v \
-  --output output/tracked.mp4 \
-  --imgsz 640 \
-  --tail 20
+python3 track.py
 ```
 
 Output video shows: bounding boxes, unique ID labels, and trajectory tails per tracked person.
-
 
 ---
 
@@ -179,11 +225,11 @@ Head (Decoupled Detect)
 
 ---
 
-### 2. Tiling Pipeline — Small Object Handling
+### 2. Tiling Pipeline — Small Object Handling (Training Only)
 
 Aerial images from VisDrone are 1920×1080. At full scale, humans are only ~30px wide. Directly resizing to 640×640 shrinks them further, making them nearly undetectable.
 
-**Solution: Sliding window tiling before training**
+**Solution: Sliding window tiling before training** (this happens in `split.py`; it is not repeated at inference time)
 
 ```
 Original frame (1920×1080)
@@ -202,7 +248,7 @@ Sliding window: 640×640 tiles, 20% overlap, stride=512px
 
 | Parameter | Value | Reason |
 |-----------|-------|--------|
-| Tile size | 640×640 | Matches training and inference resolution |
+| Tile size | 640×640 | Matches training resolution |
 | Overlap | 20% | Ensures objects near tile borders are not missed |
 | Stride | 512 px | Derived from tile size and overlap |
 | Save empty tiles | No | Only tiles containing annotations are saved — reduces class imbalance |
@@ -218,7 +264,6 @@ Sliding window: 640×640 tiles, 20% overlap, stride=512px
 5. Clipped boxes re-centered and resized within tile
 6. Normalized back to tile size (640×640)
 
-
 **Effect on object scale:**
 
 | Stage | Median human width |
@@ -226,7 +271,7 @@ Sliding window: 640×640 tiles, 20% overlap, stride=512px
 | Full frame (1920px) | ~30px |
 | After tiling (640px tile) | ~50–55px |
 
-Tiling effectively increases relative object size by ~75%, making small humans significantly easier for the model to learn.
+Tiling effectively increases relative object size by ~75% during training, making small humans significantly easier for the model to learn. Because inference is single-pass, full-frame at 640×640 (see below), objects at test time are shrunk back down to roughly the un-tiled scale — this is the main source of the tiny/far-away miss rate discussed in "Pipeline Simplifications."
 
 ---
 
@@ -251,84 +296,75 @@ Result: train 51px vs val 52px median box width — essentially identical
 
 ---
 
-### 4. Tracking — ByteTrack (Custom NumPy Implementation)
+### 4. Tracking — IoU-Only Tracker (Custom NumPy Implementation)
 
-**Algorithm:** Two-stage association with graveyard-based backtracking, implemented from scratch in NumPy and OpenCV. Zero PyTorch or Ultralytics dependency at inference time.
+**Algorithm:** Single-stage greedy IoU matching, implemented from scratch in NumPy and OpenCV. Zero PyTorch or Ultralytics dependency at inference time (when using the ONNX model).
 
-**Why ByteTrack over DeepSORT:**
+**Why IoU-only over DeepSORT / appearance-based tracking:**
 
-| Criterion | ByteTrack | DeepSORT |
+| Criterion | IoU-only tracker | DeepSORT |
 |-----------|-----------|----------|
 | Re-ID network | None | +50–100 MB |
-| Inference overhead | Low (IoU only) | High (CNN forward pass per detection) |
+| Inference overhead | Negligible | High (CNN forward pass per detection) |
 | Aerial resolution | Good — IoU sufficient at 40–60px | Re-ID degrades at low resolution |
-| ID switching | Handled by Stage 2 rescue | Handled by appearance features |
 
-At aerial resolution, humans appear at 40–60px — appearance features from a Re-ID network are too low-resolution to add meaningful signal over geometry alone. ByteTrack's key insight: unmatched detections still carry useful motion information and should not immediately spawn new IDs.
 
-**Two-stage association — how ID switching is reduced:**   
-Detections are first filtered to those meeting high_thresh = 0.25. These feed both stages.
+At aerial resolution, humans appear at 40–60px — appearance features from a Re-ID network are too low-resolution to add meaningful signal over geometry alone, which is why IoU-only matching is a reasonable choice here. The trade-off is that this implementation does **not** attempt to recover IDs after an occlusion: there is no graveyard, no backtracking, and no velocity prediction. A track that goes unmatched for more than `max_age` frames is simply dropped, and the next detection in that area starts a brand-new ID.
 
-**Stage 1** matches high-confidence detections against all active tracks using a composite score: 0.4 × IoU + 0.6 × normalised_centre_distance. Matched tracks are updated and their age reset. Unmatched tracks have their age incremented; once age exceeds max_age = 15, they are moved to a graveyard with a timestamp.
-
-**Stage 2** attempts to resurrect recently dead tracks. Unmatched detections from Stage 1 are scored against every graveyard entry using a three-term backtracking score: 0.25 × IoU + 0.50 × velocity_proximity + 0.25 × motion_angle_consistency. A graveyard track is resurrected (its original ID preserved) if its score exceeds backtrack_thresh = 0.30. The graveyard is pruned to entries within the last backtrack_window = 25 frames. Any detection not matched in either stage spawns a new track with a fresh ID.
-
-**Why this matters for drone footage specifically:**
-
-- Drone ego-motion causes whole-frame shifts between consecutive frames
-- During a camera pan, a person may briefly produce no confident detection due to motion blur
-- The graveyard window (≈1 second at 25 fps) allows tracks to survive brief occlusions and re-enter with their original ID, preventing spurious ID switches
-
-**Velocity estimation:**
-Each track maintains an exponentially-smoothed velocity (vx, vy) with α = 0.6. This is used in Stage 2 to predict where a dead track's centre should have moved during the frames it was absent, making the backtracking score robust to camera motion.
+**Matching:**
+Detections are first filtered to those meeting `HIGH_THRESH` (default 0.10 — configurable in `CONFIG`). Each detection is then greedily matched to the existing track with the highest IoU above `iou_thresh`; each track can be claimed by at most one detection per frame. Matched tracks have their box updated and age reset to 0. Unmatched tracks have their age incremented; once age exceeds `max_age` (15 frames), the track is dropped permanently. Any detection not matched to an existing track spawns a new track with a fresh ID, which is only drawn once it accumulates `MIN_HITS` consecutive matches.
 
 **Letterbox preprocessing:**
-Images are resized with preserved aspect ratio and padded with gray (114) to 640×640. The padding offsets (left, top) and scale factor are recorded during preprocessing and used to invert the transform in postprocessing, recovering original frame coordinates. Without this, bounding boxes on non-square footage are systematically offset from the actual person.
+Images are resized with preserved aspect ratio and padded with gray (114) to the model's input size. The padding offsets (left, top) and scale factor are recorded during preprocessing and used to invert the transform in postprocessing, recovering original frame coordinates. Without this, bounding boxes on non-square footage are systematically offset from the actual person.
 
-**Trajectory smoothing:**
-Raw centroids are appended directly to the tail history buffer (no positional averaging is applied). Tails are rendered with linearly increasing thickness and opacity from oldest to newest point, reducing the visual impact of detection jitter from drone vibration.
+**Trajectory tail rendering:**
+Raw centroids are appended directly to the tail history buffer — no positional averaging or smoothing is applied. Tails are rendered with linearly increasing thickness and opacity from oldest to newest point, which reduces the *visual* impact of detection jitter from drone vibration without altering the underlying track data.
 
-### 5. Optimization & Edge Deployment
+---
 
-**Current performance (CPU, ONNX FP32):**
+### 5. Real-World Performance (CPU, ONNX FP32)
 
-| Resolution | Format | FPS | mAP50 | Size |
-|------------|--------|-----|-------|------|
-| 640×640 | ONNX FP32 | 6.2 | 0.951 | 22 MB |
+Measured on a 312-frame, 1920×1080 sequence with the current single-pass pipeline (`CONF=0.10`, `IOU=0.30`):
 
-Dropping from 1024px to 640px costs only **1.1% mAP50** while gaining **2.4× speed**.
+| Resolution | Format | Avg time/frame | FPS |
+|------------|--------|-----------------|-----|
+| 640×640 | ONNX FP32, single-pass | ~357 ms | ~2.8 |
 
+This is measured end-to-end, including detection + tracking + drawing per frame, on CPU with no threading. It is lower than earlier estimates in this README that assumed the tiled + multithreaded test-time pipeline (since removed). If you need higher throughput, options include: re-introducing tiled inference (recovers small-object recall too, at a speed cost), running on GPU, or increasing `FRAME_SKIP`.
+
+---
 
 ## Key Design Choices
 
 | Trade-off | Choice | Reasoning |
 |-----------|--------|-----------|
-| Accuracy vs Speed | 640px inference | 1.1% mAP loss for 2.4× speedup |
+| Accuracy vs Speed | 640px inference | Matches training/export resolution; keep vs. increase per your accuracy/speed needs |
 | Model size vs Capacity | YOLOv8s (43 MB) | Nano too weak, medium too slow/large |
-| Re-ID vs IoU tracking | IoU only (ByteTrack) | Re-ID adds 100 MB+ with marginal gain at aerial resolution |
+| Re-ID vs IoU tracking | IoU only | Re-ID adds 100 MB+ with marginal gain at aerial resolution |
 | Training vs inference resolution | 1024px train / 640px infer | Learn fine features, deploy at speed |
 | Augmentation (rotation) | Disabled | Rotation destroys axis-aligned YOLO labels |
-| Tiling at inference | Disabled | Speed; model generalizes from tiled training data |
-| Batch size | 16 | Batch=8 caused noisy gradients and recall oscillation |
-| Empty tile saving | Disabled | Reduces class imbalance — empty tiles add no signal |
+| Tiling at inference | Disabled | Simpler, faster single-pass pipeline; costs some small-object recall (see "Pipeline Simplifications") |
+| Track ID recovery after occlusion | Disabled | Simpler tracker; re-appearing people get a new ID instead of resuming the old one |
+| Batch size (training) | 16 | Batch=8 caused noisy gradients and recall oscillation |
+| Empty tile saving (training) | Disabled | Reduces class imbalance — empty tiles add no signal |
 
 ---
 
 ## Enhancements Over Base Model
 
-1. **Sliding window tiling** — 1920×1080 frames sliced into 640×640 tiles with 20% overlap before training. Increases effective human pixel width from ~30px to ~54px. Edge positions forced to guarantee full image coverage.
+1. **Sliding window tiling (training only)** — 1920×1080 frames sliced into 640×640 tiles with 20% overlap before training. Increases effective human pixel width from ~30px to ~54px. Edge positions forced to guarantee full image coverage.
 
 2. **Stratified data split** — fixed train/val scale mismatch that caused recall collapse across all baseline runs. Both splits now have matched median box widths (51px vs 52px).
 
-3. **ByteTrack reimplemented in pure NumPy** — no PyTorch or Ultralytics dependency at inference. Two-stage IoU association with configurable high/low confidence thresholds. The entire tracking pipeline runs without a GPU.
+3. **Lightweight IoU tracker in pure NumPy** — no PyTorch/Ultralytics dependency at inference time when using the ONNX model. Single-stage greedy IoU matching; tracks are dropped rather than resurrected after occlusion, trading some ID persistence for a much simpler, easier-to-audit implementation that still runs entirely without a GPU.
 
 4. **Letterbox preprocessing with inverse transform** — aspect-ratio-preserving resize with gray padding. Padding offsets reversed in postprocessing for correct coordinate recovery on non-square footage. Without this, detections are systematically offset.
 
 5. **Aerial-specific augmentation tuning** — disabled rotation (breaks axis-aligned boxes), enabled flipud=0.5 (no orientation bias in aerial view), reduced mosaic to 0.5 (prevents unrealistic crowd densities from tiled data).
 
-6. **Two-resolution training strategy** — train at 1024px for fine feature learning, export and infer at 640px for 2.4× speedup with only 1.1% mAP drop.
+6. **Two-resolution training strategy** — train at 1024px for fine feature learning, export and infer at 640px (or higher, if the ONNX model is exported with `dynamic=True`).
 
-7. **Trajectory smoothing** — 3-frame centroid averaging reduces jitter from drone vibration and single-frame detection noise in tail rendering.
+7. **Trajectory tail rendering** — raw centroids stored directly (no positional smoothing applied); tails drawn with increasing thickness/opacity from oldest to newest point to visually reduce the perceived impact of frame-to-frame detection jitter.
 
 ---
 
@@ -345,16 +381,16 @@ python3 train.py
 python3 -c "
 from ultralytics import YOLO
 model = YOLO('best.pt')
-model.export(format='onnx', imgsz=640, simplify=True, opset=17)
+model.export(format='onnx', imgsz=640, half=False, simplify=True, dynamic=True, opset=17)
 "
 
 # Step 4: Evaluate
 python3 eval.py
 
-# Step 5: Run tracking
-python3 track.py --model best.onnx --source sequences/uav0000297_02761_v --output output/tracked.mp4
-
+# Step 5: Run tracking — edit the CONFIG block in track.py first, then:
+python3 track.py
 ```
+
 ---
 
 ## Authors
@@ -363,4 +399,3 @@ python3 track.py --model best.onnx --source sequences/uav0000297_02761_v --outpu
 [Linkedin](https://www.linkedin.com/in/vidhisrivastava01/)
 
 [Github](https://github.com/Vidhi0229)
-

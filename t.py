@@ -1,113 +1,64 @@
 
 import cv2
 import numpy as np
-import onnxruntime as ort
+from ultralytics import YOLO
 from collections import defaultdict
 import os
 import time
 
-
-# ══════════════════════════════════════════════════════════════════════
-#  CONFIG — edit these values directly instead of passing CLI flags
-# ══════════════════════════════════════════════════════════════════════
-
-MODEL       = "The-Aerial-Guardian/models/best.onnx"                  # path to the .onnx weights
-SOURCE      = "VisDrone2019-MOT-test-dev/sequences/uav0000073_04464_v"        # folder of input images
+MODEL       = "The-Aerial-Guardian/models/best.pt"                  
+SOURCE      = "sequences/uav0000073_04464_v"      
 OUTPUT      = "out.mp4"                     # output video path
 
-CONF        = 0.10                          # detection confidence threshold
-IOU         = 0.30                          # NMS IoU threshold
-IMGSZ       = 1280                          # model input size — higher keeps small/far people resolvable
-                                             
-HIGH_THRESH = 0.10                          # min score for a detection to become/update a track
-                                             # (was 0.25 — that silently dropped every detection
-                                             #  scoring between CONF and 0.25, which is exactly
-                                             #  where small/far/occluded people tend to land)
-MIN_HITS    = 2                             # consecutive matches before a track is drawn
-                                             # (lower = new people show up sooner, but noisier)
+CONF        = 0.10                        
+IOU         = 0.30                          
+IMGSZ       = 1280                      
+DEVICE      = "cpu"                         
+HIGH_THRESH = 0.10                         
+MIN_HITS    = 2                
 
-FRAME_SKIP  = 1                             # run detector every N frames (1 = every frame)
-TAIL        = 12                            # length of the fading trail behind each track
+FRAME_SKIP  = 1                             
+TAIL        = 12                           
 
 
-class ONNXDetector:
+class TorchDetector:
+    def __init__(self, model_path, imgsz=640, conf=0.10, iou=0.30, device="cpu"):
+        self.imgsz  = imgsz
+        self.conf   = conf
+        self.iou    = iou
+        self.device = device
 
-    def __init__(self, model_path, imgsz=640, conf=0.10, iou=0.30):
-        self.imgsz = imgsz
-        self.conf  = conf
-        self.iou   = iou
+        self.model = YOLO(model_path)
 
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # warm-up: first inference is always slow (graph build / CUDA init)
+        dummy = np.zeros((imgsz, imgsz, 3), dtype=np.uint8)
+        self.model.predict(dummy, imgsz=imgsz, conf=conf, iou=iou,
+                            device=device, verbose=False)
 
-        self.session = ort.InferenceSession(
-            model_path, sess_options=opts, providers=["CPUExecutionProvider"]
-        )
-        self.input_name  = self.session.get_inputs()[0].name
-        self.output_name = self.session.get_outputs()[0].name
-
-        # warm-up: first inference is always slow due to JIT
-        dummy = np.zeros((1, 3, imgsz, imgsz), dtype=np.float32)
-        self.session.run([self.output_name], {self.input_name: dummy})
-
-        print(f"Model : {model_path}")
-        print(f"Conf  : {conf}  |  IOU : {iou}")
-
-    def _preprocess(self, frame):
-        oh, ow = frame.shape[:2]
-        scale  = min(self.imgsz / ow, self.imgsz / oh)
-        nw, nh = int(ow * scale), int(oh * scale)
-        resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        canvas  = np.full((self.imgsz, self.imgsz, 3), 114, dtype=np.uint8)
-        top  = (self.imgsz - nh) // 2
-        left = (self.imgsz - nw) // 2
-        canvas[top:top+nh, left:left+nw] = resized
-        img = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        img = img.transpose(2, 0, 1)[np.newaxis]
-        return np.ascontiguousarray(img), scale, left, top
-
-    def _postprocess(self, output, ow, oh, scale, left, top):
-        pred = output[0][0].T
-        mask = pred[:, 4] >= self.conf
-        pred = pred[mask]
-        if len(pred) == 0:
-            return [], []
-
-        cx, cy, bw, bh = pred[:, 0], pred[:, 1], pred[:, 2], pred[:, 3]
-        cx = (cx - left) / scale
-        cy = (cy - top)  / scale
-        bw /= scale
-        bh /= scale
-
-        x1 = np.clip(cx - bw / 2, 0, ow).astype(int)
-        y1 = np.clip(cy - bh / 2, 0, oh).astype(int)
-        x2 = np.clip(cx + bw / 2, 0, ow).astype(int)
-        y2 = np.clip(cy + bh / 2, 0, oh).astype(int)
-
-        scores     = pred[:, 4].tolist()
-        boxes_xywh = [[x1[i], y1[i], x2[i]-x1[i], y2[i]-y1[i]] for i in range(len(scores))]
-
-        indices = cv2.dnn.NMSBoxes(boxes_xywh, scores, self.conf, self.iou)
-        if len(indices) == 0:
-            return [], []
-        indices = indices.flatten()
-
-        return [[x1[i], y1[i], x2[i], y2[i]] for i in indices], \
-               [scores[i] for i in indices]
+        print(f"Model  : {model_path}")
+        print(f"Conf   : {conf}  |  IOU : {iou}")
+        print(f"Device : {device}")
 
     def detect(self, frame):
         t0 = time.perf_counter()
-        oh, ow = frame.shape[:2]
-        inp, scale, left, top = self._preprocess(frame)
-        out = self.session.run([self.output_name], {self.input_name: inp})
-        boxes, scores = self._postprocess(out, ow, oh, scale, left, top)
+        result = self.model.predict(
+            frame, imgsz=self.imgsz, conf=self.conf, iou=self.iou,
+            device=self.device, verbose=False
+        )[0]
+
+        boxes, scores = [], []
+        if result.boxes is not None and len(result.boxes) > 0:
+            xyxy  = result.boxes.xyxy.cpu().numpy()
+            confs = result.boxes.conf.cpu().numpy()
+            for (x1, y1, x2, y2), c in zip(xyxy, confs):
+                boxes.append([int(x1), int(y1), int(x2), int(y2)])
+                scores.append(float(c))
+
         inf_ms = (time.perf_counter() - t0) * 1000
         return boxes, scores, inf_ms
 
 
 class SimpleTracker:
-   
-
     def __init__(self, max_age=15, min_hits=3, iou_thresh=0.10, high_thresh=0.25):
         self.max_age    = max_age
         self.min_hits   = min_hits
@@ -249,11 +200,12 @@ def run_tracking():
     print(f"Output : {OUTPUT}")
     print(f"Frame  : {w}x{h}")
 
-    detector = ONNXDetector(
+    detector = TorchDetector(
         model_path = MODEL,
         imgsz      = IMGSZ,
         conf       = CONF,
         iou        = IOU,
+        device     = DEVICE,
     )
 
     tracker = SimpleTracker(
